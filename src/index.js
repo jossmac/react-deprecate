@@ -1,19 +1,17 @@
 // @flow
 
 import React, { Component, type ComponentType } from 'react';
+import DeprecatedProp from './DeprecatedProp';
+import type {
+  DeprecatedProps,
+  WarningFn,
+  ProvidedProps,
+  WithRenamedPropsState,
+} from './types';
 
 const shouldWarn = process.env.ENV !== 'production';
 
-type WarningArgs = {
-  componentName: string,
-  prop: string,
-  renamedProps: RenamedProps
-};
-type WarningFn = WarningArgs => string;
-type RenamedProps = { [key: string]: string };
-type Props = { [key: string]: any };
-
-// attempt to get the wrapped component's name
+// Attempt to get the wrapped component's name
 function getComponentName(target: ComponentType<*>): string {
   if (target.displayName && typeof target.displayName === 'string') {
     return target.displayName;
@@ -22,52 +20,78 @@ function getComponentName(target: ComponentType<*>): string {
   return target.name || 'Component';
 }
 
-// deprecation warning for consumer
-function defaultWarningMessage({ componentName, prop, renamedProps }: WarningArgs): string {
-  return `${componentName} Warning: Prop "${prop}" is deprecated, use "${renamedProps[prop]}" instead.`;
-}
+// Default deprecation warning for consumer
+export const defaultWarningMessage: WarningFn = ({
+  componentName,
+  mapTo,
+  prop,
+}): string => {
+  if (mapTo) {
+    return `${componentName} Warning: Prop "${prop}" is deprecated, use "${mapTo}" instead.`;
+  }
+
+  return `${componentName} Warning: Prop "${prop}" is deprecated.`;
+};
 
 export default function renamePropsWithWarning(
   WrappedComponent: ComponentType<*>,
-  renamedProps: RenamedProps,
-  warningMessage: WarningFn = defaultWarningMessage
+  deprecatedProps: DeprecatedProps = {},
+  warningMessage: WarningFn = defaultWarningMessage,
 ): ComponentType<*> {
-  // bail early if in production
+  // Bail early if in production
   if (!shouldWarn) return WrappedComponent;
 
-  return class WithRenamedProps extends Component<Props> {
-    static displayName = `WithRenamedProps(${getComponentName(WrappedComponent)})`;
+  const componentName = getComponentName(WrappedComponent);
 
-    // warn on deprecated props
-    componentDidMount() {
-      Object.keys(renamedProps).forEach(prop => {
-        if (prop in this.props) {
-          console.warn(
-            warningMessage({
-              componentName: getComponentName(WrappedComponent),
-              prop,
-              renamedProps
-            })
-          );
-        }
-      });
+  return class WithRenamedProps extends Component<
+    ProvidedProps,
+    WithRenamedPropsState,
+  > {
+    static displayName = `WithRenamedProps(${componentName})`;
+
+    constructor(props) {
+      super(props);
+      this.state = {
+        remappedProps: this.remapProps(props),
+      };
     }
 
-    // map prop names `old` --> `new`
-    render() {
-      const props = { ...this.props };
+    componentWillReceiveProps(newProps) {
+      const remappedProps = this.remapProps(newProps);
+      this.setState({ remappedProps });
+    }
 
-      Object.keys(renamedProps).forEach(prop => {
-        if (prop in props) {
-          if (!(renamedProps[prop] in props)) {
-            props[renamedProps[prop]] = props[prop];
+    remapProps = providedProps => {
+      const remappedProps = { ...providedProps };
+
+      Object.keys(deprecatedProps).forEach(propName => {
+        const prop = new DeprecatedProp(
+          propName,
+          remappedProps,
+          deprecatedProps,
+        );
+        if (prop.isDeprecated) {
+          console.warn(
+            warningMessage({
+              componentName,
+              deprecatedProps,
+              mapTo: prop.mapTo,
+              prop: prop.key,
+              value: providedProps[prop.key],
+            }),
+          );
+          if (prop.mapTo && !(prop.mapTo in remappedProps)) {
+            remappedProps[prop.mapTo] = remappedProps[prop.key];
+            delete remappedProps[prop.key];
           }
-          delete props[prop];
         }
       });
 
-      // only pass new props
-      return <WrappedComponent {...props} />;
+      return remappedProps;
+    };
+
+    render() {
+      return <WrappedComponent {...this.state.remappedProps} />;
     }
   };
 }
